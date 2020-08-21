@@ -29,6 +29,12 @@ class Wasp(hass.Hass):
 
     self.sensors = self.door_sensors + self.motion_sensors
 
+    self.set_state(self.wasp_id, state="off", attributes={
+      "device_class": "occupancy",
+      "friendly_name": self.friendly_name,
+      }
+    )
+
     handles = []
     handle = self.listen_event(self.state_changed_callback, "state_changed")
     handles.append(handle)
@@ -72,7 +78,8 @@ class Wasp(hass.Hass):
   def update_box_state(self, data, wasp=False):
     """Update the box state."""
     state = "on" if wasp else "off"
-    last_changed = datetime.fromisoformat(data.get("new_state").get("last_changed"))
+    new = data.get("new_state")
+    last_changed = datetime.fromisoformat(new.get("last_changed")) if new else self.datetime()
     last_changed = last_changed.replace(microsecond=0)
     self.last_state = self.set_state(self.wasp_id, state=state, attributes={
         "last_changed": last_changed.isoformat(), 
