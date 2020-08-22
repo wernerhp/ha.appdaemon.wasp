@@ -1,90 +1,103 @@
 """
-Wasp in a Box app for detecting occupancy.
+Wasp in a Box app for detecting occupancy using multiple sensors.
 """
 
 import json
 import time
 import hassapi as hass
-import mqttapi as mqtt
-import voluptuous as vol
 
 from datetime import datetime
 
 MODULE = 'wasp'
 CLASS = 'Wasp'
 
-CONF_DOOR_SENSORS = 'door_sensors'
-CONF_MOTION_SENSORS = 'motion_sensors'
+ATTR_STATE = "state"
+
+CONF_DEVICE_CLASS = 'device_class'
 CONF_NAME = 'name'
+CONF_DELAY = 'delay'
+CONF_BOX_SENSORS = 'box_sensors'
+CONF_WASP_SENSORS = 'wasp_sensors'
+CONF_DOOR_SENSORS = 'door_sensors' # deprecated. use box_sensors.
+CONF_MOTION_SENSORS = 'motion_sensors' # deprecated. use wasp_sensors.
+
+STATE_WASP = "on"
+STATE_NO_WASP = "off"
+STATE_BOX_OPEN = "on"
+STATE_BOX_CLOSED = "off"
+STATE_WASP_IN_BOX = "on"
+STATE_NO_WASP_IN_BOX = "off"
 
 class Wasp(hass.Hass):
 
   def initialize(self):
     """Initialize the Wasp app."""
-    self.door_sensors = self.args.get(CONF_DOOR_SENSORS, [])
-    self.motion_sensors = self.args.get(CONF_MOTION_SENSORS, [])
+    self.wasp_entity = "binary_sensor.{name}".format(name=self.name)
+    self.device_class = self.args.get(CONF_DEVICE_CLASS, "occupancy")
+    self.friendly_name = self.args.get(CONF_NAME, self.name.replace("_", " ").title())
 
-    self.wasp_id = "binary_sensor.{name}".format(name=self.name)
-    self.friendly_name = self.args.get("name", self.name.replace("_", " ").title())
+    self.delay = self.args.get(CONF_DELAY, 0)
+    self.box_sensors = self.args.get(CONF_BOX_SENSORS, []) + self.args.get(CONF_DOOR_SENSORS, [])
+    self.wasp_sensors = self.args.get(CONF_WASP_SENSORS, []) + self.args.get(CONF_MOTION_SENSORS, [])
 
-    self.sensors = self.door_sensors + self.motion_sensors
+    self.state = STATE_NO_WASP_IN_BOX
+    self.wasp_in_a_box(box_state=STATE_BOX_OPEN, wasp_state=STATE_NO_WASP)
 
-    self.set_state(self.wasp_id, state="off", attributes={
-      "device_class": "occupancy",
-      "friendly_name": self.friendly_name,
+    for entity_id in self.box_sensors:
+      self.listen_state(self.handle_box_state, entity_id, attribute=ATTR_STATE)
+
+    for entity_id in self.wasp_sensors:
+      self.listen_state(self.handle_wasp_state, entity_id, attribute=ATTR_STATE)
+
+  def handle_box_state(self, entity, attribute, old, new, kwargs):
+    """Handle box state change."""
+    if self.delay:
+      self.state = STATE_NO_WASP_IN_BOX
+    self.run_in(self.wasp_in_a_box_cb, self.delay, box_state=new, entity=entity)
+
+  def handle_wasp_state(self, entity, attribute, old, new, kwargs):
+    """Handle wasp state change."""
+    self.run_in(self.wasp_in_a_box_cb, 0, wasp_state=new, entity=entity)
+
+  def wasp_in_a_box_cb(self, kwargs):
+    """Wasp in a Box callback"""
+    box_state = kwargs.get("box_state", self.box_state())
+    wasp_state = kwargs.get("wasp_state", self.wasp_state())
+    entity = kwargs.get("entity")
+
+    self.wasp_in_a_box(box_state=box_state, wasp_state=wasp_state, entity=entity)
+
+  def wasp_in_a_box(self, box_state, wasp_state, entity=None, **kwargs):
+    """Set Wasp in a Box state."""
+    if wasp_state == STATE_WASP:
+      self.state = STATE_WASP_IN_BOX
+    if wasp_state == STATE_NO_WASP and box_state == STATE_BOX_OPEN:
+      self.state = STATE_NO_WASP_IN_BOX
+    if wasp_state == STATE_NO_WASP and box_state == STATE_BOX_CLOSED:
+      self.state = self.state
+
+    self.set_state(self.wasp_entity, state=self.state, attributes={
+        "device_class": self.device_class,
+        "friendly_name": self.friendly_name,
+        "last_changed": self.datetime().replace(microsecond=0).isoformat(), 
+        "entity_id": entity,
+        "box": box_state,
+        "wasp": wasp_state,
       }
     )
 
-    handles = []
-    handle = self.listen_event(self.state_changed_callback, "state_changed")
-    handles.append(handle)
-
-  def state_changed_callback(self, event, data, kwargs):	
-    """Handle state change events."""
-    if data.get("entity_id") not in self.sensors:
-      return
-
-    self.last_state = self.get_state(self.wasp_id, default="off")
-
-    box_empty = self.last_state == "off"
-
-    if self.box_state() == "open":
-      if box_empty and self.detect_wasp():
-        self.update_box_state(data=data, wasp=True)
-      elif not box_empty and not self.detect_wasp():
-        self.update_box_state(data=data, wasp=False)
-    else: # closed
-      if box_empty and self.detect_wasp():
-        self.update_box_state(data=data, wasp=True)
-
   def box_state(self):
-    """Returns whether the box is open or closed."""
-    for entity_id in self.door_sensors:
-      box_state = self.get_state(entity_id, attribute="state", default="off")
-      if box_state == "on":
-        return "open"
-    return "closed"
+    """Return if the box is open or closed."""
+    for entity_id in self.box_sensors:
+      state = self.get_state(entity_id, attribute=ATTR_STATE, default=STATE_BOX_CLOSED, copy=False)
+      if state == STATE_BOX_OPEN:
+        return STATE_BOX_OPEN
+    return STATE_BOX_CLOSED
 
-  def detect_wasp(self):
-    """Detect if there's a wasp in the box."""
-    wasp = False
-    for entity_id in self.motion_sensors:
-      motion_sensor_state = self.get_state(entity_id, attribute="state", default="off") # no motion
-      if motion_sensor_state == "on": # motion detected
-        wasp = True
-        break
-    return wasp
-
-  def update_box_state(self, data, wasp=False):
-    """Update the box state."""
-    state = "on" if wasp else "off"
-    new = data.get("new_state")
-    last_changed = datetime.fromisoformat(new.get("last_changed")) if new else self.datetime()
-    last_changed = last_changed.replace(microsecond=0)
-    self.last_state = self.set_state(self.wasp_id, state=state, attributes={
-        "last_changed": last_changed.isoformat(), 
-        "entity_id": data.get("new_state").get("entity_id"),
-        "device_class": "occupancy",
-        "friendly_name": self.friendly_name,
-        }
-      )
+  def wasp_state(self):
+    """Return if there's a wasp or not."""
+    for entity_id in self.wasp_sensors:
+      state = self.get_state(entity_id, attribute=ATTR_STATE, default=STATE_NO_WASP, copy=False)
+      if state == STATE_WASP:
+        return STATE_WASP
+    return STATE_NO_WASP
