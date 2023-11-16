@@ -8,9 +8,6 @@ import hassapi as hass
 
 from datetime import datetime
 
-MODULE = 'wasp'
-CLASS = 'Wasp'
-
 ATTR_STATE = "state"
 
 CONF_DEVICE_CLASS = 'device_class'
@@ -18,8 +15,6 @@ CONF_NAME = 'name'
 CONF_DELAY = 'delay'
 CONF_BOX_SENSORS = 'box_sensors'
 CONF_WASP_SENSORS = 'wasp_sensors'
-CONF_DOOR_SENSORS = 'door_sensors' # deprecated. use box_sensors.
-CONF_MOTION_SENSORS = 'motion_sensors' # deprecated. use wasp_sensors.
 
 STATE_WASP = "on"
 STATE_NO_WASP = "off"
@@ -37,8 +32,8 @@ class Wasp(hass.Hass):
     self.friendly_name = self.args.get(CONF_NAME, self.name.replace("_", " ").title())
 
     self.delay = self.args.get(CONF_DELAY, 0)
-    self.box_sensors = self.args.get(CONF_BOX_SENSORS, []) + self.args.get(CONF_DOOR_SENSORS, [])
-    self.wasp_sensors = self.args.get(CONF_WASP_SENSORS, []) + self.args.get(CONF_MOTION_SENSORS, [])
+    self.box_sensors = self.args.get(CONF_BOX_SENSORS, [])
+    self.wasp_sensors = self.args.get(CONF_WASP_SENSORS, [])
 
     self.state = STATE_NO_WASP_IN_BOX
     self.wasp_in_a_box(box_state=STATE_BOX_OPEN, wasp_state=STATE_NO_WASP)
@@ -71,9 +66,9 @@ class Wasp(hass.Hass):
     """Set Wasp in a Box state."""
     if wasp_state == STATE_WASP:
       self.state = STATE_WASP_IN_BOX
-    if wasp_state == STATE_NO_WASP and box_state == STATE_BOX_OPEN:
+    elif box_state == STATE_BOX_OPEN:
       self.state = STATE_NO_WASP_IN_BOX
-    if wasp_state == STATE_NO_WASP and box_state == STATE_BOX_CLOSED:
+    else: 
       self.state = self.state
 
     self.set_state(self.wasp_entity, state=self.state, attributes={
@@ -87,17 +82,17 @@ class Wasp(hass.Hass):
     )
 
   def box_state(self):
-    """Return if the box is open or closed."""
+    """Return whether the box is open or closed."""
     for entity_id in self.box_sensors:
-      state = self.get_state(entity_id, attribute=ATTR_STATE, default=STATE_BOX_CLOSED, copy=False)
+      state = self.get_state(entity_id, attribute=ATTR_STATE, default=STATE_BOX_CLOSED)
       if state == STATE_BOX_OPEN:
         return STATE_BOX_OPEN
     return STATE_BOX_CLOSED
 
   def wasp_state(self):
-    """Return if there's a wasp or not."""
+    """Return whether there's a wasp or not."""
     for entity_id in self.wasp_sensors:
-      state = self.get_state(entity_id, attribute=ATTR_STATE, default=STATE_NO_WASP, copy=False)
+      state = self.get_state(entity_id, attribute=ATTR_STATE, default=STATE_NO_WASP)
       if state == STATE_WASP:
         return STATE_WASP
     return STATE_NO_WASP
